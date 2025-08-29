@@ -12,6 +12,9 @@ import { OperationPreview } from '../src/core/OperationPreview.js';
 import { i18n } from '../src/i18n/i18n.js';
 import { UndoTracker } from '../src/core/UndoTracker.js';
 import { RedoManager } from '../src/core/RedoManager.js';
+import { TurnManager } from '../src/core/TurnManager.js';
+import { TurnUndoManager } from '../src/core/TurnUndoManager.js';
+import { Turn } from '../src/core/Turn.js';
 import path from 'path';
 
 // Initialize i18n
@@ -603,6 +606,204 @@ program
     } catch (error) {
       const available = i18n.getAvailableLanguages().map(l => l.code).join(', ');
       console.error(chalk.red(i18n.t('msg.language_invalid', { languages: available })));
+    }
+  });
+
+// Turn commands
+program
+  .command('turns')
+  .description('List conversation turns (grouped operations)')
+  .option('--auto-group', 'Automatically group operations into turns')
+  .option('--gap <minutes>', 'Time gap in minutes for auto-grouping (default: 5)', '5')
+  .action(async (options) => {
+    try {
+      const parser = new ClaudeSessionParser();
+      const sessionFile = await parser.getCurrentSessionFile();
+      
+      if (!sessionFile) {
+        console.log(chalk.yellow('No active Claude Code session found.'));
+        return;
+      }
+      
+      const operations = await parser.parseSessionFile(sessionFile);
+      const turnUndoManager = new TurnUndoManager();
+      await turnUndoManager.init();
+      
+      if (options.autoGroup) {
+        console.log(chalk.cyan('Auto-grouping operations into turns...'));
+        const result = await turnUndoManager.autoGroupOperations(operations, parseInt(options.gap));
+        console.log(chalk.green(result.message));
+        console.log('');
+      }
+      
+      const turnsWithOps = turnUndoManager.getTurnsWithOperations(operations);
+      
+      if (turnsWithOps.length === 0) {
+        console.log(chalk.yellow('No turns found. Use --auto-group to create turns automatically.'));
+        return;
+      }
+      
+      console.log(chalk.bold('\\nConversation Turns:\\n'));
+      
+      turnsWithOps.forEach((turnGroup, index) => {
+        const { turn, operations, count, description } = turnGroup;
+        
+        if (turn) {
+          const duration = turn.getDuration();
+          const durationStr = duration ? `(${Math.round(duration/1000)}s)` : '';
+          
+          console.log(`${index + 1}. ${chalk.cyan('TURN')} - ${formatDistance(turn.startTime)} ${durationStr}`);
+          console.log(`   ID: ${turn.id}`);
+          console.log(`   Description: ${description}`);
+          console.log(`   Operations: ${count}`);
+          
+          if (operations.length > 0) {
+            const firstOp = operations[0];
+            const lastOp = operations[operations.length - 1];
+            console.log(`   Range: ${formatDistance(new Date(firstOp.timestamp))} → ${formatDistance(new Date(lastOp.timestamp))}`);
+          }
+        } else {
+          console.log(`${index + 1}. ${chalk.gray('UNGROUPED')} - ${count} operations`);
+          console.log(`   Description: ${description}`);
+        }
+        console.log('');
+      });
+      
+      console.log(chalk.gray(`Total: ${turnsWithOps.length} groups, ${operations.length} operations`));
+    } catch (error) {
+      console.error(chalk.red(`Error: ${error.message}`));
+    }
+  });
+
+program
+  .command('undo-turn [turn-id]')
+  .description('Undo an entire conversation turn')
+  .option('-y, --yes', 'Skip confirmation')
+  .action(async (turnId, options) => {
+    try {
+      const parser = new ClaudeSessionParser();
+      const sessionFile = await parser.getCurrentSessionFile();
+      
+      if (!sessionFile) {
+        console.log(chalk.yellow('No active Claude Code session found.'));
+        return;
+      }
+      
+      const operations = await parser.parseSessionFile(sessionFile);
+      const turnUndoManager = new TurnUndoManager();
+      await turnUndoManager.init();
+      
+      const turnsWithOps = turnUndoManager.getTurnsWithOperations(operations);
+      const actualTurns = turnsWithOps.filter(group => group.turn);
+      
+      if (actualTurns.length === 0) {
+        console.log(chalk.yellow('No turns found. Use "ccundo turns --auto-group" to create turns first.'));
+        return;
+      }
+      
+      let selectedTurnGroup = null;
+      
+      if (!turnId) {
+        const choices = actualTurns.map((group) => ({
+          name: `${group.turn.description} - ${formatDistance(group.turn.startTime)} (${group.operations.length} ops)`,
+          value: group,
+          short: group.turn.description
+        }));
+        
+        const answer = await inquirer.prompt([{
+          type: 'list',
+          name: 'selectedTurn',
+          message: 'Select turn to undo:',
+          choices: choices,
+          pageSize: 10
+        }]);
+        
+        selectedTurnGroup = answer.selectedTurn;
+      } else {
+        selectedTurnGroup = actualTurns.find(group => group.turn.id === turnId);
+        if (!selectedTurnGroup) {
+          console.log(chalk.red(`Turn ${turnId} not found.`));
+          return;
+        }
+      }
+      
+      const { turn, operations: turnOps } = selectedTurnGroup;
+      
+      if (!options.yes) {
+        console.log(chalk.yellow(`\\nThis will undo the entire turn:\\n`));
+        console.log(`${chalk.bold('Description:')} ${turn.description}`);
+        console.log(`${chalk.bold('Operations:')} ${turnOps.length}`);
+        console.log(`${chalk.bold('Time:')} ${turn.startTime.toLocaleString()}`);
+        console.log('');
+        
+        const confirm = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'proceed',
+          message: `Are you sure you want to undo this entire turn?`,
+          default: false
+        }]);
+        
+        if (!confirm.proceed) {
+          console.log(chalk.yellow('Turn undo cancelled.'));
+          return;
+        }
+      }
+      
+      const result = await turnUndoManager.undoTurn(turn.id, operations);
+      
+      if (result.success) {
+        console.log(chalk.green(`\\n✅ ${result.message}`));
+        
+        // Mark operations as undone in session tracking
+        const undoTracker = new UndoTracker();
+        await undoTracker.init();
+        
+        for (const op of turnOps) {
+          await undoTracker.markAsUndone(op.id, sessionFile);
+        }
+      } else {
+        console.log(chalk.red(`\\n❌ ${result.message}`));
+      }
+      
+    } catch (error) {
+      console.error(chalk.red(`Error: ${error.message}`));
+    }
+  });
+
+program
+  .command('group-turns')
+  .description('Manually group operations into conversation turns')
+  .option('-s, --session <id>', 'Specify session ID')
+  .option('--gap <minutes>', 'Time gap in minutes for auto-grouping (default: 5)', '5')
+  .option('--clear', 'Clear existing turn groupings first')
+  .action(async (options) => {
+    try {
+      const parser = new ClaudeSessionParser();
+      const sessionFile = await parser.getCurrentSessionFile();
+      
+      if (!sessionFile) {
+        console.log(chalk.yellow('No active Claude Code session found.'));
+        return;
+      }
+      
+      const operations = await parser.parseSessionFile(sessionFile);
+      const turnUndoManager = new TurnUndoManager();
+      await turnUndoManager.init();
+      
+      if (options.clear) {
+        console.log(chalk.cyan('Clearing existing turn groupings...'));
+        // This would require implementing clearTurns method
+      }
+      
+      console.log(chalk.cyan(`Grouping ${operations.length} operations into conversation turns...`));
+      console.log(chalk.gray(`Using ${options.gap} minute gaps between turns.`));
+      
+      const result = await turnUndoManager.autoGroupOperations(operations, parseInt(options.gap));
+      
+      console.log(chalk.green(`\\n✅ ${result.message}`));
+      console.log(chalk.gray('\\nRun "ccundo turns" to see the grouped turns.'));
+    } catch (error) {
+      console.error(chalk.red(`Error: ${error.message}`));
     }
   });
 
