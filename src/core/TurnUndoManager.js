@@ -125,6 +125,70 @@ export class TurnUndoManager {
   }
 
   /**
+   * Preview what would be undone for a turn without making changes
+   * @param {string} turnId - The ID of the turn to preview
+   * @param {Array} allOperations - All operations from the session
+   * @returns {Object} Preview information
+   */
+  async previewTurn(turnId, allOperations) {
+    const turn = this.turnManager.getTurn(turnId);
+    if (!turn) {
+      return {
+        success: false,
+        message: `Turn ${turnId} not found`
+      };
+    }
+
+    // Get operations that belong to this turn
+    const turnOperations = allOperations.filter(op => 
+      turn.operations.includes(op.id)
+    ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)); // Reverse chronological order
+
+    if (turnOperations.length === 0) {
+      return {
+        success: false,
+        message: 'No operations found in this turn'
+      };
+    }
+
+    const { OperationPreview } = await import('./OperationPreview.js');
+    const previews = [];
+
+    // Generate preview for each operation
+    for (const operation of turnOperations) {
+      try {
+        const preview = await OperationPreview.generatePreview(operation);
+        previews.push({
+          operation,
+          preview: preview.preview,
+          canUndo: preview.canUndo || true,
+          warning: preview.warning || null
+        });
+      } catch (error) {
+        previews.push({
+          operation,
+          preview: `Error generating preview: ${error.message}`,
+          canUndo: false,
+          warning: 'Preview generation failed'
+        });
+      }
+    }
+
+    return {
+      success: true,
+      turn,
+      operations: turnOperations,
+      previews,
+      summary: {
+        totalOperations: turnOperations.length,
+        canUndoCount: previews.filter(p => p.canUndo).length,
+        warningCount: previews.filter(p => p.warning).length,
+        estimatedDuration: turn.getDuration()
+      }
+    };
+  }
+
+  /**
    * Create a new turn and assign operations to it
    */
   async createTurnWithOperations(operationIds, description, allOperations) {

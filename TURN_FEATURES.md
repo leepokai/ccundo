@@ -25,6 +25,7 @@ ccundo 的 Turn 功能讓你可以將 Claude Code 會話中的操作按「問答
 |------|------|------|
 | `ccundo turns` | 列出所有對話輪次 | 顯示已分組的輪次 |
 | `ccundo turns --auto-group` | 自動分組操作 | 將操作智能分組為輪次 |
+| `ccundo preview-turn` | 預覽輪次撤銷效果 | 顯示撤銷前的詳細預覽 |
 | `ccundo undo-turn` | 撤銷整個輪次 | 交互式選擇並撤銷 |
 | `ccundo group-turns` | 手動分組 | 自定義分組參數 |
 
@@ -94,9 +95,61 @@ Conversation Turns:
 Total: 3 groups, 48 operations
 ```
 
-### 4. 撤銷整個對話輪次
+### 4. 預覽輪次撤銷效果
 
-#### 4.1 交互式選擇
+在實際撤銷前，建議先預覽會發生什麼變更：
+
+```bash
+# 交互式選擇輪次並預覽
+ccundo preview-turn
+
+# 預覽特定輪次
+ccundo preview-turn a1b2c3d4-e5f6-7890-abcd-ef1234567890
+
+# 顯示詳細差異預覽
+ccundo preview-turn --detailed
+```
+
+**預期輸出**：
+```
+🔍 Generating turn preview...
+
+📋 Turn Preview: 2 file ops + 3 commands
+   Time: 8/29/2025, 5:35:49 PM
+   Duration: 45s
+   Operations: 5 total, 4 can undo
+   ⚠️  1 operations have warnings
+
+📝 Operations to be undone:
+
+1. ✅ file_create - 2h ago
+   ID: toolu_01ABC123
+   Preview: Will delete file: /path/to/newfile.js
+   ... (15 more lines, use --detailed for full preview)
+
+2. ✅ file_edit - 2h ago
+   ID: toolu_01DEF456
+   Preview: Will revert file: /path/to/existing.js
+   
+3. ❌ bash_command - 2h ago
+   ID: toolu_01GHI789
+   ⚠️  Warning: Cannot auto-undo bash command
+   Preview: Cannot auto-undo bash command: npm install package
+
+📊 Summary:
+   • 4 operations can be undone automatically
+   • 1 operations require manual intervention
+   • 1 operations have warnings
+
+🎯 Next steps:
+   • To proceed: ccundo undo-turn a1b2c3d4-e5f6-7890-abcd-ef1234567890
+   • To proceed without confirmation: ccundo undo-turn --yes a1b2c3d4-e5f6-7890-abcd-ef1234567890
+   • To see all turns: ccundo turns
+```
+
+### 5. 撤銷整個對話輪次
+
+#### 5.1 交互式選擇
 
 ```bash
 ccundo undo-turn
@@ -109,19 +162,19 @@ ccundo undo-turn
   Created 3 files - 1h ago (3 ops)
 ```
 
-#### 4.2 指定輪次 ID
+#### 5.2 指定輪次 ID
 
 ```bash
 ccundo undo-turn a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
-#### 4.3 跳過確認
+#### 5.3 跳過確認
 
 ```bash
 ccundo undo-turn --yes
 ```
 
-### 5. 撤銷過程詳情
+### 6. 撤銷過程詳情
 
 **確認提示**：
 ```
@@ -189,8 +242,8 @@ ccundo group-turns --clear --gap 10
 
 # 2. 發現問題，想撤銷整個功能
 ccundo turns --auto-group
-ccundo undo-turn
-# 選擇 "2 file ops + 1 command" 輪次
+ccundo preview-turn  # 先預覽會撤銷什麼
+ccundo undo-turn     # 選擇 "2 file ops + 1 command" 輪次
 ```
 
 ### 場景 2：實驗性修改的快速回滾
@@ -200,9 +253,10 @@ ccundo undo-turn
 # 你問：「試試看用 TypeScript 重寫這個檔案」
 # Claude 修改了多個檔案的語法
 
-# 2. 決定不採用，一鍵回滾
+# 2. 決定不採用，先預覽再回滾
 ccundo turns --auto-group
-ccundo undo-turn --yes  # 撤銷最新的輪次
+ccundo preview-turn --detailed  # 詳細查看會撤銷的內容
+ccundo undo-turn --yes          # 撤銷最新的輪次
 ```
 
 ### 場景 3：多步驟任務的部分撤銷
@@ -214,8 +268,9 @@ ccundo undo-turn --yes  # 撤銷最新的輪次
 
 # 2. 只想撤銷某個特定步驟
 ccundo turns --auto-group
-ccundo turns  # 查看所有輪次
-ccundo undo-turn <specific-turn-id>  # 撤銷特定輪次
+ccundo turns                         # 查看所有輪次
+ccundo preview-turn <specific-turn-id>  # 預覽特定輪次的變更
+ccundo undo-turn <specific-turn-id>     # 撤銷特定輪次
 ```
 
 ## 🛡️ 安全特性
@@ -284,6 +339,7 @@ ccundo undo-turn <specific-turn-id>  # 撤銷特定輪次
 
 - **定期分組**：建議在每次重要開發階段後執行分組
 - **適當間隔**：根據你的工作習慣調整時間間隔（5-30 分鐘）
+- **預覽優先**：撤銷前總是先使用 `preview-turn` 查看會發生什麼
 - **清理策略**：定期清理舊的輪次資料和備份檔案
 
 ## 🐛 疑難排解
@@ -346,7 +402,7 @@ ls -la ~/.ccundo/backups/
 1. **開始新任務前**：檢查當前狀態 `ccundo list`
 2. **完成階段性工作後**：分組操作 `ccundo turns --auto-group`
 3. **實驗性修改前**：記錄當前輪次狀態
-4. **發現問題時**：立即撤銷相關輪次
+4. **發現問題時**：先預覽 `ccundo preview-turn`，再撤銷相關輪次
 5. **完成工作後**：確認所有變更無誤
 
 ### 分組策略
@@ -368,6 +424,7 @@ ls -la ~/.ccundo/backups/
 ccundo 的 Turn 功能提供了：
 
 - ✅ **智能分組**：自動將相關操作分組為對話輪次
+- ✅ **詳細預覽**：撤銷前完整預覽所有變更內容
 - ✅ **整輪撤銷**：一鍵撤銷整個問答的所有操作
 - ✅ **安全機制**：完整的備份和確認機制
 - ✅ **彈性使用**：支援交互式和命令行模式

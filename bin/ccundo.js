@@ -771,6 +771,139 @@ program
   });
 
 program
+  .command('preview-turn [turn-id]')
+  .description('Preview what would be undone for a conversation turn')
+  .option('-s, --session <id>', 'Specify session ID')
+  .option('--detailed', 'Show detailed diff previews')
+  .action(async (turnId, options) => {
+    try {
+      const parser = new ClaudeSessionParser();
+      const sessionFile = await parser.getCurrentSessionFile();
+      
+      if (!sessionFile) {
+        console.log(chalk.yellow('No active Claude Code session found.'));
+        return;
+      }
+      
+      const operations = await parser.parseSessionFile(sessionFile);
+      const turnUndoManager = new TurnUndoManager();
+      await turnUndoManager.init();
+      
+      const turnsWithOps = turnUndoManager.getTurnsWithOperations(operations);
+      const actualTurns = turnsWithOps.filter(group => group.turn);
+      
+      if (actualTurns.length === 0) {
+        console.log(chalk.yellow('No turns found. Use "ccundo turns --auto-group" to create turns first.'));
+        return;
+      }
+      
+      let selectedTurnGroup = null;
+      
+      if (!turnId) {
+        // Interactive selection
+        const choices = actualTurns.map((group) => ({
+          name: `${group.description} - ${formatDistance(group.turn.startTime)} (${group.operations.length} ops)`,
+          value: group,
+          short: group.turn.description
+        }));
+        
+        const answer = await inquirer.prompt([{
+          type: 'list',
+          name: 'selectedTurn',
+          message: 'Select turn to preview:',
+          choices: choices,
+          pageSize: 10
+        }]);
+        
+        selectedTurnGroup = answer.selectedTurn;
+      } else {
+        selectedTurnGroup = actualTurns.find(group => group.turn.id === turnId);
+        if (!selectedTurnGroup) {
+          console.log(chalk.red(`Turn ${turnId} not found.`));
+          return;
+        }
+      }
+      
+      const { turn } = selectedTurnGroup;
+      console.log(chalk.cyan('\\n🔍 Generating turn preview...\\n'));
+      
+      const previewResult = await turnUndoManager.previewTurn(turn.id, operations);
+      
+      if (!previewResult.success) {
+        console.log(chalk.red(`❌ ${previewResult.message}`));
+        return;
+      }
+      
+      const { turn: previewTurn, previews, summary } = previewResult;
+      
+      // Show turn summary
+      console.log(chalk.bold(`📋 Turn Preview: ${previewTurn.description}`));
+      console.log(chalk.gray(`   Time: ${previewTurn.startTime.toLocaleString()}`));
+      if (summary.estimatedDuration) {
+        console.log(chalk.gray(`   Duration: ${Math.round(summary.estimatedDuration/1000)}s`));
+      }
+      console.log(chalk.gray(`   Operations: ${summary.totalOperations} total, ${summary.canUndoCount} can undo`));
+      
+      if (summary.warningCount > 0) {
+        console.log(chalk.yellow(`   ⚠️  ${summary.warningCount} operations have warnings`));
+      }
+      console.log('');
+      
+      // Show individual operation previews
+      console.log(chalk.bold('📝 Operations to be undone:\\n'));
+      
+      previews.forEach((item, index) => {
+        const { operation, preview, canUndo, warning } = item;
+        const status = canUndo ? chalk.green('✅') : chalk.red('❌');
+        const opType = chalk.cyan(operation.type);
+        const timeAgo = formatDistance(operation.timestamp);
+        
+        console.log(`${index + 1}. ${status} ${opType} - ${timeAgo}`);
+        console.log(`   ID: ${operation.id}`);
+        
+        if (warning) {
+          console.log(chalk.yellow(`   ⚠️  Warning: ${warning}`));
+        }
+        
+        if (options.detailed || !canUndo) {
+          console.log(chalk.gray(`   Preview: ${preview}`));
+        } else {
+          // Show abbreviated preview
+          const lines = preview.split('\\n');
+          if (lines.length > 3) {
+            console.log(chalk.gray(`   Preview: ${lines[0]}`));
+            console.log(chalk.gray(`   ... (${lines.length - 1} more lines, use --detailed for full preview)`));
+          } else {
+            console.log(chalk.gray(`   Preview: ${preview}`));
+          }
+        }
+        console.log('');
+      });
+      
+      // Show summary and next steps
+      console.log(chalk.bold('📊 Summary:'));
+      console.log(`   • ${chalk.green(summary.canUndoCount)} operations can be undone automatically`);
+      
+      const failCount = summary.totalOperations - summary.canUndoCount;
+      if (failCount > 0) {
+        console.log(`   • ${chalk.red(failCount)} operations require manual intervention`);
+      }
+      
+      if (summary.warningCount > 0) {
+        console.log(`   • ${chalk.yellow(summary.warningCount)} operations have warnings`);
+      }
+      
+      console.log('\\n' + chalk.bold('🎯 Next steps:'));
+      console.log(`   • To proceed: ${chalk.green('ccundo undo-turn ' + turn.id)}`);
+      console.log(`   • To proceed without confirmation: ${chalk.green('ccundo undo-turn --yes ' + turn.id)}`);
+      console.log(`   • To see all turns: ${chalk.cyan('ccundo turns')}`);
+      
+    } catch (error) {
+      console.error(chalk.red(`Error: ${error.message}`));
+    }
+  });
+
+program
   .command('group-turns')
   .description('Manually group operations into conversation turns')
   .option('-s, --session <id>', 'Specify session ID')
