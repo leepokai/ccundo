@@ -109,11 +109,17 @@ export class TurnManager {
   /**
    * Group operations into turns based on time gaps
    * Operations with gaps > timeGapMs belong to different turns
+   * Only groups UNGROUPED operations, does not modify existing turns
    */
   async groupOperationsIntoTurns(operations, timeGapMs = 60000) { // 60 seconds default
     if (operations.length === 0) return [];
 
-    const sortedOps = [...operations].sort((a, b) => 
+    // Filter to only ungrouped operations
+    const ungroupedOps = operations.filter(op => !this.getTurnForOperation(op.id));
+    
+    if (ungroupedOps.length === 0) return [];
+
+    const sortedOps = [...ungroupedOps].sort((a, b) => 
       new Date(a.timestamp) - new Date(b.timestamp)
     );
 
@@ -151,7 +157,7 @@ export class TurnManager {
 
     // Generate descriptions for turns
     for (const turn of turns) {
-      const turnOps = operations.filter(op => 
+      const turnOps = ungroupedOps.filter(op => 
         turn.operations.includes(op.id)
       );
       turn.description = Turn.generateDescription(turnOps);

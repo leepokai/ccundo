@@ -693,21 +693,22 @@ program
       const turnUndoManager = new TurnUndoManager();
       await turnUndoManager.init();
       
-      const turnsWithOps = turnUndoManager.getTurnsWithOperations(operations);
-      const actualTurns = turnsWithOps.filter(group => group.turn);
+      const availableTurns = turnUndoManager.getTurnsForUndoSelection(operations);
       
-      if (actualTurns.length === 0) {
-        console.log(chalk.yellow('No turns found. Use "ccundo turns --auto-group" to create turns first.'));
+      if (availableTurns.length === 0) {
+        console.log(chalk.yellow('No operations found to undo.'));
         return;
       }
       
       let selectedTurnGroup = null;
       
       if (!turnId) {
-        const choices = actualTurns.map((group) => ({
-          name: `${group.turn.description} - ${formatDistance(group.turn.startTime)} (${group.operations.length} ops)`,
+        const choices = availableTurns.map((group) => ({
+          name: group.isUngrouped 
+            ? `${group.description} - ${group.operations.length} operations`
+            : `${group.turn.description} - ${formatDistance(group.turn.startTime)} (${group.totalCascadedOps} ops)${group.cascadeWarning}`,
           value: group,
-          short: group.turn.description
+          short: group.description
         }));
         
         const answer = await inquirer.prompt([{
@@ -720,20 +721,28 @@ program
         
         selectedTurnGroup = answer.selectedTurn;
       } else {
-        selectedTurnGroup = actualTurns.find(group => group.turn.id === turnId);
+        selectedTurnGroup = availableTurns.find(group => 
+          group.turn ? group.turn.id === turnId : turnId === 'ungrouped'
+        );
         if (!selectedTurnGroup) {
           console.log(chalk.red(`Turn ${turnId} not found.`));
           return;
         }
       }
       
-      const { turn, operations: turnOps } = selectedTurnGroup;
+      const { turn, operations: turnOps, isUngrouped, cascadeWarning, totalCascadedOps } = selectedTurnGroup;
       
       if (!options.yes) {
-        console.log(chalk.yellow(`\\nThis will undo the entire turn:\\n`));
-        console.log(`${chalk.bold('Description:')} ${turn.description}`);
+        console.log(chalk.yellow(`\\nThis will undo the entire ${isUngrouped ? 'ungrouped operations' : 'turn'}:\\n`));
+        console.log(`${chalk.bold('Description:')} ${selectedTurnGroup.description}`);
         console.log(`${chalk.bold('Operations:')} ${turnOps.length}`);
-        console.log(`${chalk.bold('Time:')} ${turn.startTime.toLocaleString()}`);
+        if (!isUngrouped) {
+          console.log(`${chalk.bold('Time:')} ${turn.startTime.toLocaleString()}`);
+          if (cascadeWarning) {
+            console.log(`${chalk.bold('⚠️  Cascading:')} This will also undo ${totalCascadedOps - turnOps.length} operations from future turns`);
+            console.log(`${chalk.bold('Total operations:')} ${totalCascadedOps}`);
+          }
+        }
         console.log('');
         
         const confirm = await inquirer.prompt([{
@@ -749,7 +758,9 @@ program
         }
       }
       
-      const result = await turnUndoManager.undoTurn(turn.id, operations);
+      const result = isUngrouped 
+        ? await turnUndoManager.undoUngroupedOperations(operations)
+        : await turnUndoManager.undoTurnWithCascading(turn.id, operations);
       
       if (result.success) {
         console.log(chalk.green(`\\n✅ ${result.message}`));
@@ -841,6 +852,10 @@ program
       console.log(chalk.gray(`   Time: ${previewTurn.startTime.toLocaleString()}`));
       if (summary.estimatedDuration) {
         console.log(chalk.gray(`   Duration: ${Math.round(summary.estimatedDuration/1000)}s`));
+      }
+      
+      if (summary.cascadedTurns > 1) {
+        console.log(chalk.yellow(`   ⚠️  Cascading ${summary.cascadedTurns} turns (including future operations)`));
       }
       console.log(chalk.gray(`   Operations: ${summary.totalOperations} total, ${summary.canUndoCount} can undo`));
       

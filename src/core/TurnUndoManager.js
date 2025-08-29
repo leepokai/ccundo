@@ -110,6 +110,36 @@ export class TurnUndoManager {
   }
 
   /**
+   * Get turns available for undo selection (includes UNGROUPED)
+   */
+  getTurnsForUndoSelection(allOperations) {
+    const turnGroups = this.turnManager.getOperationsByTurns(allOperations);
+    
+    return turnGroups.map(group => {
+      let cascadeWarning = '';
+      let totalCascadedOps = group.operations.length;
+      
+      if (group.turn) {
+        const cascadeInfo = this.getCascadedTurnsForUndo(group.turn.id, allOperations);
+        if (cascadeInfo.turns.length > 1) {
+          cascadeWarning = ` ⚠️  +${cascadeInfo.turns.length - 1} future turns`;
+          totalCascadedOps = cascadeInfo.operations.length;
+        }
+      }
+
+      return {
+        turn: group.turn,
+        operations: group.operations,
+        count: group.operations.length,
+        totalCascadedOps,
+        description: group.turn ? group.turn.description : 'UNGROUPED',
+        isUngrouped: !group.turn,
+        cascadeWarning
+      };
+    }).filter(group => group.operations.length > 0); // Only include groups with operations
+  }
+
+  /**
    * Group existing operations into turns automatically
    */
   async autoGroupOperations(operations, timeGapMinutes = 5) {
@@ -139,15 +169,14 @@ export class TurnUndoManager {
       };
     }
 
-    // Get operations that belong to this turn
-    const turnOperations = allOperations.filter(op => 
-      turn.operations.includes(op.id)
-    ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)); // Reverse chronological order
+    // Get cascaded operations (including the target turn and future turns)
+    const cascadeInfo = this.getCascadedTurnsForUndo(turnId, allOperations);
+    const cascadedOperations = cascadeInfo.operations;
 
-    if (turnOperations.length === 0) {
+    if (cascadedOperations.length === 0) {
       return {
         success: false,
-        message: 'No operations found in this turn'
+        message: 'No operations found in cascaded turns'
       };
     }
 
@@ -155,7 +184,7 @@ export class TurnUndoManager {
     const previews = [];
 
     // Generate preview for each operation
-    for (const operation of turnOperations) {
+    for (const operation of cascadedOperations) {
       try {
         const preview = await OperationPreview.generatePreview(operation);
         previews.push({
@@ -177,14 +206,187 @@ export class TurnUndoManager {
     return {
       success: true,
       turn,
-      operations: turnOperations,
+      cascadeInfo,
+      operations: cascadedOperations,
       previews,
       summary: {
-        totalOperations: turnOperations.length,
+        totalOperations: cascadedOperations.length,
+        cascadedTurns: cascadeInfo.turns.length,
         canUndoCount: previews.filter(p => p.canUndo).length,
         warningCount: previews.filter(p => p.warning).length,
         estimatedDuration: turn.getDuration()
       }
+    };
+  }
+
+  /**
+   * Undo ungrouped operations
+   */
+  async undoUngroupedOperations(allOperations) {
+    // Get operations that aren't assigned to any turn
+    const ungroupedOps = allOperations.filter(op => 
+      !this.turnManager.getTurnForOperation(op.id)
+    ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)); // Reverse chronological order
+
+    if (ungroupedOps.length === 0) {
+      return {
+        success: false,
+        message: 'No ungrouped operations found'
+      };
+    }
+
+    console.log(`\n🔄 Undoing ungrouped operations`);
+    console.log(`   Operations: ${ungroupedOps.length}`);
+
+    let successCount = 0;
+    let failCount = 0;
+    const results = [];
+
+    // Undo each operation in reverse order
+    for (const operation of ungroupedOps) {
+      try {
+        const result = await this.undoManager.undo(operation);
+        results.push(result);
+        
+        if (result.success) {
+          successCount++;
+          console.log(`   ✅ ${result.message}`);
+          if (result.backupPath) {
+            console.log(`      Backup: ${result.backupPath}`);
+          }
+        } else {
+          failCount++;
+          console.log(`   ❌ ${result.message}`);
+        }
+      } catch (error) {
+        failCount++;
+        console.log(`   ❌ Failed to undo ${operation.type}: ${error.message}`);
+        results.push({
+          success: false,
+          message: error.message
+        });
+      }
+    }
+
+    return {
+      success: successCount > 0,
+      message: `Ungrouped undo completed: ${successCount} successful, ${failCount} failed`,
+      successCount,
+      failCount,
+      results
+    };
+  }
+
+  /**
+   * Get cascaded turns that need to be undone when undoing a specific turn
+   * If undoing turn B in sequence A→B→C, returns [B, C] 
+   */
+  getCascadedTurnsForUndo(turnId, allOperations) {
+    const targetTurn = this.turnManager.getTurn(turnId);
+    if (!targetTurn) {
+      return { turns: [], operations: [] };
+    }
+
+    const allTurns = this.turnManager.getAllTurns();
+    
+    // Find all turns that come after (have later start time) the target turn
+    const cascadedTurns = allTurns.filter(turn => 
+      turn.startTime >= targetTurn.startTime
+    ).sort((a, b) => b.startTime - a.startTime); // Latest first for undo order
+
+    // Get all operations for these cascaded turns
+    const cascadedOperations = [];
+    for (const turn of cascadedTurns) {
+      const turnOps = allOperations.filter(op => turn.operations.includes(op.id));
+      cascadedOperations.push(...turnOps);
+    }
+
+    return {
+      turns: cascadedTurns,
+      operations: cascadedOperations.sort((a, b) => 
+        new Date(b.timestamp) - new Date(a.timestamp)
+      )
+    };
+  }
+
+  /**
+   * Undo turn with cascading logic
+   */
+  async undoTurnWithCascading(turnId, allOperations) {
+    const cascadeInfo = this.getCascadedTurnsForUndo(turnId, allOperations);
+    
+    if (cascadeInfo.turns.length === 0) {
+      return {
+        success: false,
+        message: `Turn ${turnId} not found`
+      };
+    }
+
+    if (cascadeInfo.operations.length === 0) {
+      return {
+        success: false,
+        message: 'No operations found in cascaded turns'
+      };
+    }
+
+    const targetTurn = this.turnManager.getTurn(turnId);
+    const cascadedTurns = cascadeInfo.turns;
+
+    console.log(`\n🔄 Undoing turn with cascading: ${targetTurn.description}`);
+    if (cascadedTurns.length > 1) {
+      console.log(`   Cascading ${cascadedTurns.length} turns (including future operations)`);
+      cascadedTurns.forEach(turn => {
+        console.log(`   - ${turn.description} (${turn.operations.length} ops) - ${turn.startTime.toLocaleString()}`);
+      });
+    }
+    console.log(`   Total operations: ${cascadeInfo.operations.length}`);
+
+    let successCount = 0;
+    let failCount = 0;
+    const results = [];
+
+    // Undo each operation in reverse chronological order
+    for (const operation of cascadeInfo.operations) {
+      try {
+        const result = await this.undoManager.undo(operation);
+        results.push(result);
+        
+        if (result.success) {
+          successCount++;
+          console.log(`   ✅ ${result.message}`);
+          if (result.backupPath) {
+            console.log(`      Backup: ${result.backupPath}`);
+          }
+        } else {
+          failCount++;
+          console.log(`   ❌ ${result.message}`);
+        }
+      } catch (error) {
+        failCount++;
+        console.log(`   ❌ Failed to undo ${operation.type}: ${error.message}`);
+        results.push({
+          success: false,
+          message: error.message
+        });
+      }
+    }
+
+    // Remove successful operations from turn tracking
+    if (successCount > 0) {
+      const successfulOpIds = cascadeInfo.operations
+        .filter((_, index) => results[index]?.success)
+        .map(op => op.id);
+      
+      await this.turnManager.removeOperationsFromTurns(successfulOpIds);
+    }
+
+    return {
+      success: successCount > 0,
+      message: `Cascading undo completed: ${successCount} successful, ${failCount} failed (${cascadedTurns.length} turns affected)`,
+      successCount,
+      failCount,
+      results,
+      cascadedTurns: cascadedTurns.length
     };
   }
 
