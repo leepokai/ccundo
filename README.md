@@ -13,6 +13,7 @@ ccundo seamlessly integrates with Claude Code to provide granular undo and redo 
 - **Detailed Previews** - See exactly what will be changed before undoing/redoing
 - **Cascading Undo/Redo** - Maintains project consistency by undoing/redoing dependent operations
 - **Complete Redo System** - Reverse any undo operation with full cascading support
+- **Turn-based Operations** - Group related operations into conversation turns for batch undo
 - **Multi-language** - Supports English and Japanese (日本語)
 - **Smart Operation Tracking** - Tracks file edits, creations, deletions, renames, and bash commands
 - **Safe Backups** - Creates backups before making changes
@@ -42,6 +43,12 @@ npm install -g ccundo
 5. Redo previously undone operations:
    ```bash
    ccundo redo
+   ```
+6. Work with conversation turns:
+   ```bash
+   ccundo turns                 # Group operations into turns
+   ccundo preview-turn          # Preview turn undo
+   ccundo undo-turn             # Undo entire turn
    ```
 
 ## Usage
@@ -110,6 +117,64 @@ ccundo redo --yes             # Skip confirmation prompts
 ```
 
 **Cascading Redo:** When you select an operation to redo, ccundo will also redo ALL undone operations that came before it. This maintains the same consistency guarantees as undo operations.
+
+### Turn-based Operations
+
+Group related operations into conversation turns for easier management:
+
+```bash
+ccundo turns                   # List grouped turns
+ccundo turns                   # Auto-group operations by time gaps
+ccundo preview-turn            # Preview what a turn undo would do
+ccundo undo-turn               # Undo an entire conversation turn
+```
+
+**Turn Features:**
+- **Smart Grouping** - Automatically groups operations by time gaps (default 5 minutes)
+- **Batch Undo** - Undo all operations from a single conversation turn at once
+- **Turn Preview** - See exactly what will be undone before confirming
+- **Interactive Selection** - Choose which turn to undo with full context
+- **Conversation State Recovery** - Restore your codebase to any previous conversation completion point
+
+**Automatic Turn Creation:**
+
+To automatically create turns after each conversation, add this hook to your Claude Code settings:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ccundo group-turns"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This hook runs `ccundo group-turns` automatically when each conversation ends, creating logical turn boundaries that let you **restore your codebase to exactly where it was after any previous conversation**. This is incredibly useful for experimental development, where you can try different approaches and easily revert to known-good states.
+
+**Example:**
+```bash
+$ ccundo turns
+1. TURN - 2h ago (45s)
+   Description: 2 file ops + 3 commands
+   Operations: 5
+
+$ ccundo preview-turn
+📋 Turn Preview: 2 file ops + 3 commands
+   Operations: 5 total, 4 can undo
+   ⚠️ 1 operations have warnings
+
+$ ccundo undo-turn
+✅ Turn undo completed: 4 successful, 1 failed
+```
 
 ### Session Management
 
@@ -244,6 +309,7 @@ ccundo stores its configuration in `~/.ccundo/`:
 ~/.ccundo/
 ├── config.json              # Language preferences
 ├── undone-operations.json   # Undo/redo state tracking
+├── turns.json               # Turn grouping data
 ├── sessions/                # Local session tracking (if used)
 └── backups/                # Operation backups
 ```

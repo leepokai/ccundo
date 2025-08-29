@@ -639,7 +639,7 @@ program
       const turnsWithOps = turnUndoManager.getTurnsWithOperations(operations);
       
       if (turnsWithOps.length === 0) {
-        console.log(chalk.yellow('No turns found. Use --auto-group to create turns automatically.'));
+        console.log(chalk.yellow('No turns found. Use ccundo group-turns to create turns automatically.'));
         return;
       }
       
@@ -804,7 +804,7 @@ program
       const actualTurns = turnsWithOps.filter(group => group.turn);
       
       if (actualTurns.length === 0) {
-        console.log(chalk.yellow('No turns found. Use "ccundo turns --auto-group" to create turns first.'));
+        console.log(chalk.yellow('No turns found. Use "ccundo group-turns" to create turns first.'));
         return;
       }
       
