@@ -158,7 +158,7 @@ To automatically create turns after each conversation, add this hook to your Cla
 }
 ```
 
-This hook runs `ccundo group-turns` automatically when each conversation ends, creating logical turn boundaries that let you **restore your codebase to exactly where it was after any previous conversation**. This is incredibly useful for experimental development, where you can try different approaches and easily revert to known-good states.
+This hook runs `ccundo group-turns` automatically when each conversation ends, creating logical turn boundaries that let you **restore your codebase to exactly where it was after any previous conversation**.
 
 **Example:**
 ```bash
